@@ -21,14 +21,15 @@ app.post("/summarize", async (req, res) => {
     const { text, transcript, segments } = req.body;
     const content = segments || text || transcript;
 
-    console.log(`📝 Content received for summary. Length: ${content?.length || 0} chars`);
-
-    if (!content || content.length < 10) {
+    if (!content || (typeof content === 'string' && content.trim().length < 5) || (Array.isArray(content) && content.length === 0)) {
+      console.log(`⚠️ Content too short or empty. Received: "${content}" (Length: ${content?.length || 0})`);
       return res.json({
-        summary: "Waiting for more content...",
+        summary: "Waiting for enough content to summarize...",
         actionItems: []
       });
     }
+
+    console.log(`📝 Summarizing content. Length: ${typeof content === 'string' ? content.length : JSON.stringify(content).length} chars`);
 
     const result = await generateSummary(content);
 
@@ -43,26 +44,7 @@ app.post("/summarize", async (req, res) => {
     const message = err.message || "AI processing failed";
 
     if (status === 429) {
-      console.log("⚠️ Quota exceeded. Returning MOCK data for demo purposes.");
-      return res.json({
-        summary: `### Executive Summary
-The meeting focused on the Q1 product roadmap and stabilizing the AI Meeting Intelligence system. The team aligned on finalizing core features and transitioning to a more robust audio architecture.
-
-### Key Discussion Points
-- **Audio Reliability**: Resolution of ScriptProcessorNode deprecation using modern AnalyserNode.
-- **Data Integrity**: Hardening of the dashboard sync and auto-retry logic for OpenAI fails.
-- **User Experience**: Restoring the SignUp "Company ID" field for better team collaboration.
-
-### Decisions Made
-- ✅ Deploy the modern audio pipeline by EOD.
-- ✅ Implement mock data fallback for OpenAI 429 errors.
-- ✅ Standardize on markdown for all AI-generated summaries.`,
-        actionItems: [
-          { task: "finalize project documentation and architecture diagram", assigned_to_name: "Manager", due_text: "Monday" },
-          { task: "update the unit tests for core modules", assigned_to_name: "Unassigned", due_text: "EOD" },
-          { task: "sync with the client on the new strategy", assigned_to_name: "Unassigned", due_text: "Next week" }
-        ]
-      });
+      console.log("⚠️ Quota exceeded on current provider. Please check API key balance.");
     }
 
     res.status(status).json({

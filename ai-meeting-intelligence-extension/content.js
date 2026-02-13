@@ -15,6 +15,7 @@ let audioInterval = null;
 
 let recognition = null;
 let isListening = false;
+let retryCount = 0;
 
 let fullTranscript = "";
 //let lastSpeechTime = 0;
@@ -36,8 +37,19 @@ function sendChunkToBackend(chunk) {
         .then(res => res.json())
         .then(data => {
           if (!checkContext()) return;
-          console.log("✅ SUMMARY RECEIVED:", data.summary);
-          chrome.storage.local.set({ summary: data.summary });
+          // Robust check: Only save if it's a real summary (e.g. has markdown headers)
+          // Avoid saving error messages or the "Waiting" placeholder
+          const isRealSummary = data.summary &&
+            data.summary.includes("###") &&
+            !data.summary.includes("Waiting for enough content") &&
+            !data.summary.includes("Summary error");
+
+          if (isRealSummary) {
+            console.log("✅ REAL SUMMARY RECEIVED:", data.summary.substring(0, 50) + "...");
+            chrome.storage.local.set({ summary: data.summary });
+          } else {
+            console.log("ℹ️ Interim AI response ignored (not a full summary yet)");
+          }
         })
         .catch(err => console.error("Send failed", err));
     });
@@ -45,6 +57,20 @@ function sendChunkToBackend(chunk) {
     console.warn("⚠️ sendChunkToBackend: Context invalidated.");
   }
 }
+
+// RECOVERY: Load existing state on startup
+chrome.storage.local.get(["transcript", "transcript_en", "isListening", "participants", "speakerSegments", "summary"], (data) => {
+  if (data.transcript_en) fullTranscript = data.transcript_en;
+  if (data.isListening) {
+    console.log("🔄 Recovering listening state...");
+    isListening = true;
+    initSpeechRecognition();
+    try { recognition.start(); } catch (e) { }
+  }
+  if (data.participants) participants = new Set(data.participants);
+  if (data.speakerSegments) speakerSegments = data.speakerSegments;
+  console.log("📂 State recovered from storage");
+});
 
 let lastSpeaker = "";
 let participants = new Set();
@@ -80,7 +106,7 @@ function startCaptionObserver() {
                   const lastSeg = speakerSegments[speakerSegments.length - 1];
                   if (lastSeg) lastSeg.text = text;
                 }
-                chrome.storage.local.set({ speakerSegments: speakerSegments.slice(-20), participants: Array.from(participants) });
+                chrome.storage.local.set({ speakerSegments: speakerSegments.slice(-500), participants: Array.from(participants) });
               }
             }
           });
@@ -98,11 +124,20 @@ function startCaptionObserver() {
 // Helper to check if extension context is valid
 function checkContext() {
   if (!chrome.runtime?.id) {
-    if (meetingActive) {
+    if (meetingActive || isListening) {
       console.error("🛑 AI Meeting Extension: Context invalidated. Please refresh the page to continue recording.");
+
+      // Stop all active processes to avoid spamming errors
       meetingActive = false;
-      stopSpeechRecognition();
-      stopAudioDetection();
+      isListening = false;
+
+      try { stopSpeechRecognition(); } catch (e) { }
+      try { stopAudioDetection(); } catch (e) { }
+      if (audioInterval) clearInterval(audioInterval);
+
+      // Nullify observers/intervals
+      audioInterval = null;
+      recognition = null;
     }
     return false;
   }
@@ -234,11 +269,17 @@ function initSpeechRecognition() {
   };
 
   recognition.onerror = (e) => {
+    // We log but don't warn for common non-critical errors
+    if (e.error === "no-speech") {
+      console.log("ℹ️ Speech recognition: No speech detected (normal).");
+      return; // Handled by onend restart
+    }
+
     console.warn("⚠️ Speech recognition error:", e.error);
 
     // Backgrounding/Tab switching often triggers 'aborted' or 'network'
     if (e.error === "aborted" || e.error === "network") {
-      console.log("🔄 Tab backgrounded or network blip. Will restart in 1s...");
+      console.log("🔄 Tab backgrounded or network blip. Will restart...");
     }
 
     if (e.error === "not-allowed") {
@@ -250,18 +291,28 @@ function initSpeechRecognition() {
   recognition.onend = () => {
     console.log("⚪ Speech recognition session ended.");
     if (isListening) {
-      const delay = document.visibilityState === 'hidden' ? 5000 : 800;
+      // Visibility state affects restart delay
+      let delay = document.visibilityState === 'hidden' ? 5000 : 800;
+
+      // If we had a network error recently, add exponential backoff
+      if (retryCount > 0) {
+        delay = Math.min(delay * Math.pow(2, retryCount), 30000);
+        console.log(`📡 Network/Retry backoff active: ${delay}ms (Retry #${retryCount})`);
+      }
+
       console.log(`🔄 Restarting in ${delay}ms... (Tab is ${document.visibilityState})`);
       setTimeout(() => {
         if (isListening) {
           try {
             if (!recognition) initSpeechRecognition();
             recognition.start();
+            console.log("🟢 Speech recognition restart: Success");
+            retryCount = 0;
           } catch (err) {
-            // Attempt full re-init if start fails
+            console.warn("⚠️ Restart failed, cooling down...", err.message);
+            retryCount++;
+            // Force re-init and attempt one more time shortly
             recognition = null;
-            initSpeechRecognition();
-            try { recognition.start(); } catch (e) { }
           }
         }
       }, delay);
@@ -282,6 +333,26 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
+// Periodic keep-alive check to prevent silent stops
+setInterval(() => {
+  if (isListening) {
+    if (!recognition) {
+      console.log("💓 Keep-alive: Recognition was null but isListening is true. Re-initializing...");
+      initSpeechRecognition();
+      try { recognition.start(); } catch (e) { }
+    } else {
+      // recognition exists, but let's check if it's actually alive by trying to start it
+      // if it's already running, it will throw an error, which we catch
+      try {
+        recognition.start();
+        console.log("💓 Keep-alive: Recognition was stopped. Restarted.");
+      } catch (e) {
+        // Already running, which is good
+      }
+    }
+  }
+}, 10000);
+
 /* ================= CONTROL ================= */
 
 function startSpeechRecognition() {
@@ -289,6 +360,7 @@ function startSpeechRecognition() {
 
   initSpeechRecognition();
   isListening = true;
+  chrome.storage.local.set({ isListening: true });
 
   try {
     recognition.start();
@@ -414,6 +486,7 @@ function detectMeeting() {
 
     startAudioTracking();
     startCaptionObserver();
+    speakerSegments = []; // Ensure fresh segments for a new meeting
     console.log("✅ Meeting joined:", meetingId);
   }
 
@@ -432,27 +505,45 @@ async function endMeeting() {
 
   if (!checkContext()) return;
 
-  chrome.storage.local.get(["transcript_en", "meeting", "selectedLanguage"], async (storageData) => {
+  chrome.storage.local.get(["transcript_en", "transcript", "meeting", "selectedLanguage", "summary"], async (storageData) => {
     if (!checkContext()) return;
 
-    const transcript = storageData.transcript_en || "";
-    const currentMeetingId = storageData.meeting?.meetingId || meetingId || "unknown";
+    // MULTI-USER SYNC: Construct the final transcript from speaker segments (if available)
+    // This ensures the transcript on the dashboard shows everyone, not just the user.
+    let synthesizedTranscript = "";
+    if (speakerSegments && speakerSegments.length > 0) {
+      synthesizedTranscript = speakerSegments.map(s => `${s.speaker}: ${s.text}`).join("\n");
+      console.log(`🧵 Synthesized multi-user transcript from ${speakerSegments.length} segments.`);
+    } else {
+      synthesizedTranscript = storageData.transcript || storageData.transcript_en || "";
+      console.log("🎙️ Falling back to single-user mic transcript (No captions detected).");
+    }
 
-    console.log("🏁 Meeting ended. Requesting AI analysis...");
+    const currentMeetingId = storageData.meeting?.meetingId || meetingId || "unknown";
+    const storedSummary = storageData.summary || "";
+
+    console.log(`🏁 Meeting ended. Requesting final AI analysis for ${synthesizedTranscript.length} chars...`);
 
     try {
       const res = await fetch("http://localhost:3000/summarize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          transcript: transcript,
+          transcript: synthesizedTranscript,
           segments: speakerSegments,
           meeting_id: currentMeetingId
         })
       });
 
       const aiData = await res.json();
-      const summary = aiData.summary || "Summary failed.";
+
+      // FALLBACK: If the final AI call returns "Waiting..." but we already have a real summary in storage, use the stored one!
+      let summary = aiData.summary || "Summary failed.";
+      if (summary.includes("Waiting for enough content") && storedSummary && storedSummary.length > 50) {
+        console.log("♻️ Final AI call was too short; falling back to last good stored summary.");
+        summary = storedSummary;
+      }
+
       const actionItems = aiData.actionItems || [];
       const participantList = Array.from(participants);
 
@@ -468,15 +559,18 @@ async function endMeeting() {
         participants: participantList
       });
 
-      // Truncate to avoid URL length issues
+      // Truncate to avoid URL length issues (Node/Vite typical limit is ~16KB, so 14KB is safe)
       const encodedSummary = encodeURIComponent(summary);
       const encodedActions = encodeURIComponent(JSON.stringify(actionItems));
       const encodedParticipants = encodeURIComponent(JSON.stringify(participantList));
-      const encodedSegments = encodeURIComponent(JSON.stringify(speakerSegments.slice(-15)));
+      const encodedSegments = encodeURIComponent(JSON.stringify(speakerSegments.slice(-500)));
 
       const baseLength = `http://localhost:5173/?new_meeting=true&meeting_id=${currentMeetingId}&summary=${encodedSummary}&action_items=${encodedActions}&participants=${encodedParticipants}&segments=${encodedSegments}&transcript=`.length;
-      const maxLength = 2000;
-      const safeTranscript = transcript.slice(0, Math.max(maxLength - baseLength, 500));
+      const maxLength = 14000;
+      // SYNC THE END OF THE TRANSCRIPT IF TRUNCATED (Capture the most recent discussion)
+      const safeTranscript = transcript.length > (maxLength - baseLength)
+        ? transcript.slice(-(maxLength - baseLength))
+        : transcript;
 
       const dashboardUrl = `http://localhost:5173/?new_meeting=true&meeting_id=${encodeURIComponent(currentMeetingId.replace(/\//g, ''))}&summary=${encodedSummary}&action_items=${encodedActions}&transcript=${encodeURIComponent(safeTranscript)}&participants=${encodedParticipants}&segments=${encodedSegments}`;
 
@@ -485,7 +579,11 @@ async function endMeeting() {
     } catch (err) {
       console.error("Sync failed:", err);
       if (!checkContext()) return;
-      const dashboardUrl = `http://localhost:5173/`;
+
+      // Fallback: sync transcript even if AI fails
+      const safeTranscript = transcript.slice(-5000);
+      const dashboardUrl = `http://localhost:5173/?new_meeting=true&meeting_id=${encodeURIComponent(currentMeetingId.replace(/\//g, ''))}&summary=Sync failed (Backend Error).&transcript=${encodeURIComponent(safeTranscript)}&participants=${encodeURIComponent(JSON.stringify(Array.from(participants)))}&segments=${encodeURIComponent(JSON.stringify(speakerSegments.slice(-50)))}`;
+
       chrome.runtime.sendMessage({ action: "OPEN_DASHBOARD", url: dashboardUrl });
     }
   });

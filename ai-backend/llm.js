@@ -3,13 +3,27 @@ import OpenAI from "openai";
 
 dotenv.config();
 
+const apiKey = process.env.OPENAI_API_KEY;
+const isGroq = apiKey?.startsWith("gsk_");
+
+if (!apiKey) {
+  console.error("❌ CRITICAL: OPENAI_API_KEY is missing from environment variables!");
+} else {
+  console.log(`📡 AI Config: Key loaded (Prefix: ${apiKey.substring(0, 4)}..., IsGroq: ${isGroq})`);
+}
+
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: apiKey,
+  baseURL: isGroq ? "https://api.groq.com/openai/v1" : undefined
 });
 
 export async function generateSummary(text) {
+  const model = isGroq ? "llama-3.3-70b-versatile" : "gpt-4o-mini";
+
+  console.log(`🤖 Using AI Provider: ${isGroq ? "Groq" : "OpenAI"} (Model: ${model})`);
+
   const res = await openai.chat.completions.create({
-    model: "gpt-4o-mini",
+    model: model,
     response_format: { type: "json_object" },
     messages: [
       {
@@ -21,17 +35,28 @@ export async function generateSummary(text) {
         CRITICAL: Regardless of the input language, the final summary must be in sophisticated, professional English.
         
         Return a JSON object with:
-        - 'summary': A high-quality markdown-formatted summary including:
-            ### Executive Summary
-            (A 2-3 sentence high-level overview)
-            ### Key Discussion Points
-            (Bullet points of the most important topics discussed)
-            ### Decisions Made
-            (Clear list of confirmed decisions)
-        - 'actionItems': An array of objects, each with:
+        - 'summary': A high-quality markdown-formatted summary following this EXACT structure:
+            # Executive Summary
+            (A 3-5 sentence strategic overview of the meeting's purpose and primary outcomes)
+
+            # Key Discussion Points
+            (Detailed bullet points covering the most important topics, debates, and themes)
+
+            # Decisions Made
+            (Clear, numbered list of all confirmed decisions and consensus reached)
+
+            # Action Items
+            (A list of tasks in the format: **Name**: Task description and deadline)
+
+        - 'actionItems': An array of objects for the database, each with:
             - 'task': Precise description of the work.
             - 'assigned_to_name': The owner (match speaker name if possible).
-            - 'due_text': Deadline info as per the meeting.`
+            - 'due_text': Deadline info as per the meeting.
+            
+        REMINDER LOGIC: 
+        1. Ensure every explicit request or commitment is captured.
+        2. If no specific name is mentioned, use "Team" or "Unassigned".
+        3. Be extremely detailed. Don't just list topics, explain the *context* of what was discussed.`
       },
       { role: "user", content: typeof text === 'string' ? text : JSON.stringify(text) }
     ]
@@ -41,6 +66,9 @@ export async function generateSummary(text) {
     return JSON.parse(res.choices[0].message.content);
   } catch (e) {
     console.error("Failed to parse AI response:", e);
-    return { summary: res.choices[0].message.content, actionItems: [] };
+    return {
+      summary: res.choices[0].message.content || "No summary generated.",
+      actionItems: []
+    };
   }
 }

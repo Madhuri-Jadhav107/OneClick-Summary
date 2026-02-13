@@ -25,14 +25,17 @@ const Dashboard = () => {
     const fetchMeetings = async () => {
         try {
             let q;
-            if (user.role === 'Manager') {
+            console.log("🔍 Fetching meetings for:", { uid: user.uid, role: user.role, companyId: user.company_id });
+            if (user.role === 'Manager' && user.company_id) {
                 // Manager sees all meetings in the company
+                console.log("🏢 Querying as Manager for company:", user.company_id);
                 q = query(
                     collection(db, "meetings"),
                     where("company_id", "==", user.company_id)
                 );
             } else {
                 // User only sees their own meetings
+                console.log("👤 Querying as User for UID:", user.uid);
                 q = query(
                     collection(db, "meetings"),
                     where("user_id", "==", user.uid)
@@ -41,6 +44,7 @@ const Dashboard = () => {
 
             const querySnapshot = await getDocs(q);
             const meetings = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            console.log(`📊 Found ${meetings.length} meetings for this user.`);
 
             meetings.sort((a, b) => new Date(b.date || b.created_at) - new Date(a.date || a.created_at));
 
@@ -72,6 +76,7 @@ const Dashboard = () => {
     useEffect(() => {
         const handleNewMeeting = async () => {
             if (searchParams.get('new_meeting') === 'true' && user) {
+                console.log("👀 New meeting sync detected in URL");
                 const transcript = decodeURIComponent(searchParams.get('transcript') || "");
                 const summary = decodeURIComponent(searchParams.get('summary') || "");
                 const actionItemsRaw = searchParams.get('action_items');
@@ -86,126 +91,141 @@ const Dashboard = () => {
                     if (actionItemsRaw) actionItems = JSON.parse(decodeURIComponent(actionItemsRaw));
                     if (participantsRaw) participants = JSON.parse(decodeURIComponent(participantsRaw));
                     if (segmentsRaw) segments = JSON.parse(decodeURIComponent(segmentsRaw));
+                    console.log("📦 Parsed components:", { actionItems: actionItems.length, participants: participants.length });
                 } catch (e) {
-                    console.error("Failed to parse meeting components:", e);
+                    console.error("❌ Failed to parse meeting components:", e);
                 }
 
                 try {
-                    console.log("🔄 Starting handleNewMeeting sync...");
+                    console.log("🔄 Fetching user profile for sync...");
                     const userDoc = await getDoc(doc(db, "users", user.uid));
                     const profile = userDoc.exists() ? userDoc.data() : null;
 
-                    if (profile) {
-                        const companyId = profile.company_id || "default_company";
-                        console.log("✅ Profile found. Company ID:", companyId);
+                    if (!profile) {
+                        console.warn("⚠️ User profile not found in Firestore. Sync aborted.");
+                        alert("Your user profile is missing from the database. Please try logging out and signing up again.");
+                        return;
+                    }
 
-                        // Resolve participants to UIDs
-                        let participantUids = [];
-                        for (const pName of participants) {
-                            try {
-                                const usersRef = collection(db, "users");
-                                const q = query(usersRef, where("company_id", "==", companyId), where("fullName", "==", pName));
-                                const userSnapshot = await getDocs(q);
-                                if (!userSnapshot.empty) {
-                                    participantUids.push({ name: pName, uid: userSnapshot.docs[0].id });
-                                }
-                            } catch (e) {
-                                console.warn(`Could not resolve participant ${pName}:`, e);
+                    const companyId = profile.company_id || "default_company";
+
+                    // NEW: Fetch existing meeting to preserve summary if it already exists
+                    let existingMeeting = null;
+                    if (urlMeetingId) {
+                        try {
+                            const eDoc = await getDoc(doc(db, "meetings", urlMeetingId));
+                            if (eDoc.exists()) existingMeeting = eDoc.data();
+                        } catch (e) {
+                            console.warn("Could not fetch existing meeting for fallback:", e);
+                        }
+                    }
+
+                    console.log("✅ Profile found. Company ID:", companyId);
+
+                    // Resolve participants to UIDs
+                    console.log("👥 Resolving participants...");
+                    let participantUids = [];
+                    for (const pName of participants) {
+                        try {
+                            const usersRef = collection(db, "users");
+                            const q = query(usersRef, where("company_id", "==", companyId), where("fullName", "==", pName));
+                            const userSnapshot = await getDocs(q);
+                            if (!userSnapshot.empty) {
+                                participantUids.push({ name: pName, uid: userSnapshot.docs[0].id });
+                            }
+                        } catch (e) {
+                            console.warn(`Could not resolve participant ${pName}:`, e);
+                        }
+                    }
+
+                    const newMeeting = {
+                        title: `Meeting: ${urlMeetingId || 'Session'}`,
+                        date: existingMeeting?.date || new Date().toISOString(),
+                        duration: existingMeeting?.duration || 'Captured',
+                        participants: (participants.length || existingMeeting?.participants || 1),
+                        participant_list: participants.length > 0 ? participants : (existingMeeting?.participant_list || []),
+                        participant_uids: participantUids.length > 0 ? participantUids : (existingMeeting?.participant_uids || []),
+                        status: 'Processed',
+                        transcript: transcript || existingMeeting?.transcript || "",
+                        segments: segments.length > 0 ? segments : (existingMeeting?.segments || []),
+                        summary: summary && !summary.includes("Waiting for enough content") && !summary.includes("Summary failed") ? summary : (existingMeeting?.summary || summary),
+                        company_id: companyId,
+                        user_id: user.uid,
+                        created_at: existingMeeting?.created_at || new Date().toISOString()
+                    };
+
+                    console.log("💾 Saving meeting to Firestore...");
+                    let meetingRef;
+                    if (urlMeetingId) {
+                        meetingRef = doc(db, "meetings", urlMeetingId);
+                        await setDoc(meetingRef, newMeeting);
+                    } else {
+                        meetingRef = await addDoc(collection(db, "meetings"), newMeeting);
+                    }
+                    const mId = urlMeetingId || meetingRef.id;
+                    console.log("✅ Meeting saved successfully with ID:", mId);
+
+                    // Resolve assignees and create notifications
+                    console.log("📝 Processing action items and notifications...");
+                    for (const item of actionItems) {
+                        const taskDesc = item.task || (typeof item === 'string' ? item : "");
+                        if (!taskDesc) continue;
+
+                        const assigneeName = item.assigned_to_name || "Unassigned";
+                        const dueText = item.due_text || "Soon";
+
+                        let assignedToUserId = item.assigned_to_user_id || null;
+                        let assigneeEmail = "";
+
+                        // Resolve name to UID
+                        const matchingParticipant = participantUids.find(p => p.name === assigneeName);
+                        if (matchingParticipant) {
+                            assignedToUserId = matchingParticipant.uid;
+                            const uDoc = await getDoc(doc(db, "users", assignedToUserId));
+                            if (uDoc.exists()) assigneeEmail = uDoc.data().email;
+                        } else if (assigneeName !== "Unassigned") {
+                            const usersRef = collection(db, "users");
+                            const q = query(usersRef, where("company_id", "==", companyId), where("fullName", "==", assigneeName));
+                            const userSnapshot = await getDocs(q);
+                            if (!userSnapshot.empty) {
+                                assignedToUserId = userSnapshot.docs[0].id;
+                                assigneeEmail = userSnapshot.docs[0].data().email || "";
                             }
                         }
 
-                        const newMeeting = {
-                            title: `Meeting: ${urlMeetingId || 'Session'}`,
-                            date: new Date().toISOString(),
-                            duration: 'Captured',
-                            participants: participants.length || 1,
-                            participant_list: participants,
-                            participant_uids: participantUids,
-                            status: 'Processed',
-                            transcript,
-                            segments,
-                            summary,
+                        const actionItem = {
+                            meeting_id: mId,
                             company_id: companyId,
-                            user_id: user.uid,
+                            description: taskDesc,
+                            assignee_name: assigneeName,
+                            assignee_user_id: assignedToUserId,
+                            assignee_email: assigneeEmail || (assignedToUserId === user.uid ? user.email : ""),
+                            due_date: item.due_date || new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
+                            due_text: dueText,
+                            status: 'pending',
                             created_at: new Date().toISOString()
                         };
+                        const actionItemRef = await addDoc(collection(db, "action_items"), actionItem);
 
-                        console.log("Saving new meeting to Firestore:", newMeeting);
-                        let meetingRef;
-                        if (urlMeetingId) {
-                            meetingRef = doc(db, "meetings", urlMeetingId);
-                            await setDoc(meetingRef, newMeeting);
-                        } else {
-                            meetingRef = await addDoc(collection(db, "meetings"), newMeeting);
-                        }
-                        console.log("Meeting saved successfully with ID:", urlMeetingId || meetingRef.id);
-
-                        const mId = urlMeetingId || meetingRef.id;
-
-                        // Resolve assignees and create notifications
-                        for (const item of actionItems) {
-                            const taskDesc = item.task || (typeof item === 'string' ? item : "");
-                            if (!taskDesc) continue;
-
-                            const assigneeName = item.assigned_to_name || "Unassigned";
-                            const dueText = item.due_text || "Soon";
-
-                            let assignedToUserId = item.assigned_to_user_id || null;
-                            let assigneeEmail = "";
-
-                            // Resolve name to UID
-                            const matchingParticipant = participantUids.find(p => p.name === assigneeName);
-                            if (matchingParticipant) {
-                                assignedToUserId = matchingParticipant.uid;
-                                // Get details for email if needed
-                                const uDoc = await getDoc(doc(db, "users", assignedToUserId));
-                                if (uDoc.exists()) assigneeEmail = uDoc.data().email;
-                            } else if (assigneeName !== "Unassigned") {
-                                const usersRef = collection(db, "users");
-                                const q = query(usersRef, where("company_id", "==", profile.company_id), where("fullName", "==", assigneeName));
-                                const userSnapshot = await getDocs(q);
-                                if (!userSnapshot.empty) {
-                                    assignedToUserId = userSnapshot.docs[0].id;
-                                    assigneeEmail = userSnapshot.docs[0].data().email || "";
-                                }
-                            }
-
-                            const actionItem = {
-                                meeting_id: mId,
-                                company_id: profile.company_id || "default",
-                                description: taskDesc,
-                                assignee_name: assigneeName,
-                                assignee_user_id: assignedToUserId,
-                                assignee_email: assigneeEmail || (assignedToUserId === user.uid ? user.email : ""),
-                                due_date: item.due_date || new Date(Date.now() + 3 * 24 * 60 * 60 * 1000).toISOString(),
-                                due_text: dueText,
-                                status: 'pending',
-                                created_at: new Date().toISOString()
-                            };
-                            const actionItemRef = await addDoc(collection(db, "action_items"), actionItem);
-
-                            const notification = {
-                                user_id: assignedToUserId || user.uid,
-                                action_item_id: actionItemRef.id,
-                                message: `${assigneeName}: ${taskDesc} (Due: ${dueText})`,
-                                type: 'reminder',
-                                read: false,
-                                created_at: new Date().toISOString(),
-                                meeting_id: mId,
-                                automated: true
-                            };
-                            await addDoc(collection(db, "notifications"), notification);
-                        }
-
-                        console.log("Meeting saved and tasks assigned successfully.");
-
-                        // Clear search params ONLY after success
-                        window.history.replaceState({}, document.title, window.location.pathname);
-                        fetchMeetings(); // Refresh list
+                        const notification = {
+                            user_id: assignedToUserId || user.uid,
+                            action_item_id: actionItemRef.id,
+                            message: `${assigneeName}: ${taskDesc} (Due: ${dueText})`,
+                            type: 'reminder',
+                            read: false,
+                            created_at: new Date().toISOString(),
+                            meeting_id: mId,
+                            automated: true
+                        };
+                        await addDoc(collection(db, "notifications"), notification);
                     }
+
+                    console.log("🏁 Sync complete. Clearing URL params and fetching fresh list...");
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                    fetchMeetings();
                 } catch (error) {
                     console.error('❌ Error saving meeting:', error);
-                    alert("Critical: Failed to save meeting data. Please check your network or console.");
+                    alert("Critical: Failed to save meeting data. " + error.message);
                 }
             }
         };
