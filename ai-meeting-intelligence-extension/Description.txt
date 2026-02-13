@@ -1,0 +1,91 @@
+Project Overview
+
+This project is a Smart Meeting Assistance System developed as a Chrome Extension.
+It provides:
+
+1.Live speech-to-text transcription
+
+2.Meeting summary generation
+
+3.Topic identification
+
+4.Action item and decision detection
+
+5.Speaking and silent time tracking
+
+⚠️ Note: Due to browser security limitations, true live translation of other participants’ audio is not possible in Zoom/Google Meet. The transcription works only for microphone input available to the browser.
+
+
+
+Technologies Used
+
+1.JavaScript
+
+2.Chrome Extension APIs
+
+3.Web Speech API (SpeechRecognition)
+
+4.Chrome Storage API
+
+5.HTML & CSS
+
+
+---
+
+## ⚙️ How to Run the Project
+
+### Step 1: Open Chrome Extensions
+Go to:
+chrome://extensions/
+
+
+---
+
+### Step 2: Enable Developer Mode
+Turn ON **Developer Mode** (top-right corner).
+
+---
+
+### Step 3: Load Extension
+- Click **Load Unpacked**
+- Select the project folder
+
+---
+
+### Step 4: Join a Meeting
+- Open a Zoom meeting in Chrome browser
+- The extension automatically detects the meeting
+
+---
+
+### Step 5: Start Transcription
+- Click on the extension icon
+- Press **Start Transcription**
+- Speak using your microphone
+
+---
+
+### Step 6: View Results
+After stopping transcription or leaving the meeting:
+- Summary is generated
+- Topics are identified
+- Action items & decisions are displayed
+
+---
+
+## How It Works
+
+### Speech Recognition
+Uses Chrome’s built-in Web Speech API to capture microphone audio
+and convert it into text.
+
+---
+
+### NLP Processing
+Keyword-based logic is used to detect:
+- Action items
+- Decisions
+- Discussion topics
+
+---
+

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="UTF-8">
+  <title>OneClick Smart Assistant</title>
+  <link rel="stylesheet" href="popup.css">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+  <div class="header">
+    <div class="logo">OneClick</div>
+    <div id="status-badge" class="status-badge">Ready</div>
+  </div>
+
+  <div class="container">
+    <div class="card meeting-details">
+      <div class="card-header">
+        <span class="icon">📅</span> Meeting Info
+      </div>
+      <div class="card-body">
+        <div class="detail-row">
+          <span class="label">ID:</span>
+          <span id="meetingId" class="value">-</span>
+        </div>
+        <div class="detail-row">
+          <span class="label">Time:</span>
+          <span id="startTime" class="value">-</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card language-selector">
+      <div class="card-header">
+        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+          <span><span class="icon">🌐</span> Language</span>
+          <div id="volume-indicator" class="volume-indicator">
+            <div class="volume-bar"></div>
+            <span>Mic Active</span>
+          </div>
+        </div>
+      </div>
+      <div class="card-body">
+        <div class="lang-switch">
+          <button class="lang-btn active" data-lang="en">English</button>
+          <button class="lang-btn" data-lang="hi">हिंदी</button>
+          <button class="lang-btn" data-lang="mr">मराठी</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card live-insights">
+      <div class="card-header">
+        <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+          <span><span class="icon">✨</span> AI Insights</span>
+          <span id="multilingual-badge"
+            style="background: rgba(129, 140, 248, 0.2); color: var(--color-primary); font-size: 10px; padding: 2px 6px; border-radius: 4px; border: 1px solid rgba(129, 140, 248, 0.3);">Multilingual
+            ON</span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="summaryText" class="placeholder">Summary will appear here...</div>
+      </div>
+    </div>
+
+    <div class="card transcript-view">
+      <div class="card-header">
+        <span class="icon">✍️</span> Live Transcript
+      </div>
+      <div class="card-body">
+        <div id="liveTranscript" class="transcript-box">Listening...</div>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button id="startBtn" class="primary-btn">Start Meeting</button>
+      <button id="stopBtn" class="secondary-btn">End & Dashboard</button>
+    </div>
+
+    <div class="footer-actions">
+      <button id="downloadBtn" class="text-btn">Download Transcript</button>
+      <button id="refreshBtn" class="text-btn">Refresh Status</button>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+
+</html>
