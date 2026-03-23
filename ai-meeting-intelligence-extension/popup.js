@@ -5,7 +5,7 @@ const summaryText = $("summaryText");
 function updatePopupUI() {
   try {
     if (!chrome.runtime?.id) return;
-    chrome.storage.local.get(["meeting", "audioActive", "summary", "selectedLanguage", "transcript_en", "transcript_hi", "transcript_mr", "liveText", "live_hi", "live_mr"], data => {
+    chrome.storage.local.get(["meeting", "audioActive", "summary", "selectedLanguage", "transcript_en", "transcript_hi", "transcript_mr", "liveText", "live_hi", "live_mr", "speakerSegments"], data => {
       if (chrome.runtime.lastError) return;
       const m = data.meeting || {};
       const statusBadge = $("status-badge");
@@ -37,7 +37,13 @@ function updatePopupUI() {
       });
 
       // Transcript box
-      liveTranscript.textContent = (data.transcript_en || "") + (data.liveText || "") || "Listening...";
+      let transcriptText = "";
+      if (data.speakerSegments && data.speakerSegments.length > 0) {
+        transcriptText = data.speakerSegments.map(s => `${s.speaker}: ${s.text}`).join('\n');
+      } else {
+        transcriptText = (data.transcript_en || "") + (data.liveText || "");
+      }
+      liveTranscript.textContent = transcriptText || "Listening...";
 
       // Auto-scroll
       liveTranscript.scrollTop = liveTranscript.scrollHeight;

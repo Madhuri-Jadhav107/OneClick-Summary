@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { ArrowLeft, Calendar, Clock, Download, CheckCircle, FileText, MessageSquare } from 'lucide-react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Calendar, Clock, Download, CheckCircle, FileText, MessageSquare, Trash2 } from 'lucide-react';
 import { db } from '../lib/firebase';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, collection, query, where, getDocs, deleteDoc } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 import ReactMarkdown from 'react-markdown';
 
 
 const MeetingDetail = () => {
     const { id } = useParams();
+    const navigate = useNavigate();
     const [activeTab, setActiveTab] = useState('summary');
+    const [viewLang, setViewLang] = useState('en');
     const [meetingData, setMeetingData] = useState(null);
     const [actionItems, setActionItems] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -62,12 +64,32 @@ const MeetingDetail = () => {
     }, [id]);
 
     const handleDownload = (meeting) => {
+        const sum = viewLang === 'hi' ? (meeting.summary_hi || meeting.summary) : viewLang === 'mr' ? (meeting.summary_mr || meeting.summary) : meeting.summary;
+        const trans = viewLang === 'hi' ? (meeting.transcript_hi || meeting.transcript) : viewLang === 'mr' ? (meeting.transcript_mr || meeting.transcript) : meeting.transcript;
+        
+        const file = new Blob([`Title: ${meeting.title}\nDate: ${meeting.date}\nLanguage: ${viewLang.toUpperCase()}\n\nSummary:\n${sum}\n\nTranscript:\n${trans}`], { type: 'text/plain' });
         const element = document.createElement("a");
-        const file = new Blob([`Title: ${meeting.title}\nDate: ${meeting.date}\n\nSummary:\n${meeting.summary}\n\nTranscript:\n${meeting.transcript}`], { type: 'text/plain' });
         element.href = URL.createObjectURL(file);
-        element.download = `${meeting.title.replace(/\s+/g, '_')}_summary.txt`;
+        element.download = `${meeting.title.replace(/\s+/g, '_')}_${viewLang}_summary.txt`;
         document.body.appendChild(element); // Required for this to work in FireFox
         element.click();
+    };
+
+    const handleDelete = async () => {
+        if (!window.confirm("Are you sure you want to delete this meeting? This cannot be undone.")) return;
+        try {
+            await deleteDoc(doc(db, "meetings", id));
+            
+            const q = query(collection(db, "action_items"), where("meeting_id", "==", id));
+            const snapshot = await getDocs(q);
+            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, "action_items", d.id)));
+            await Promise.all(deletePromises);
+
+            navigate("/");
+        } catch (error) {
+            console.error("Error deleting meeting:", error);
+            alert("Failed to delete meeting.");
+        }
     };
 
     if (loading) return <div style={{ padding: '2rem', color: 'white' }}>Loading meeting details...</div>;
@@ -109,6 +131,24 @@ const MeetingDetail = () => {
                     }}
                 >
                     <Download size={18} /> Download Summary
+                </button>
+                <button
+                    onClick={handleDelete}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.5rem',
+                        cursor: 'pointer',
+                        padding: '0.75rem 1.25rem',
+                        backgroundColor: 'transparent',
+                        color: '#ef4444',
+                        border: '1px solid #ef4444',
+                        borderRadius: '8px',
+                        fontWeight: 600,
+                        marginLeft: '1rem'
+                    }}
+                >
+                    <Trash2 size={18} /> Delete Meeting
                 </button>
             </div>
 
@@ -153,13 +193,43 @@ const MeetingDetail = () => {
                     ))}
                 </div>
 
+                {/* Language Selector */}
+                {(activeTab === 'summary' || activeTab === 'transcript') && (
+                    <div style={{ display: 'flex', padding: '1rem 2rem', gap: '1rem', borderBottom: '1px solid #334155', backgroundColor: 'rgba(0,0,0,0.1)' }}>
+                        <span style={{ color: 'var(--color-text-secondary)', alignSelf: 'center', marginRight: '0.5rem' }}>Language:</span>
+                        {[
+                            { id: 'en', label: 'English' },
+                            { id: 'hi', label: 'Hindi (हिंदी)' },
+                            { id: 'mr', label: 'Marathi (मराठी)' }
+                        ].map(lang => (
+                            <button
+                                key={lang.id}
+                                onClick={() => setViewLang(lang.id)}
+                                style={{
+                                    padding: '0.25rem 0.75rem',
+                                    borderRadius: '9999px',
+                                    border: '1px solid',
+                                    borderColor: viewLang === lang.id ? 'var(--color-primary)' : '#475569',
+                                    backgroundColor: viewLang === lang.id ? 'rgba(129, 140, 248, 0.1)' : 'transparent',
+                                    color: viewLang === lang.id ? 'var(--color-primary)' : 'var(--color-text-secondary)',
+                                    cursor: 'pointer'
+                                }}
+                            >
+                                {lang.label}
+                            </button>
+                        ))}
+                    </div>
+                )}
+
                 {/* Content */}
                 <div style={{ padding: '2rem' }}>
                     {activeTab === 'summary' && (
                         <div>
                             <div className="markdown-content" style={{ color: 'var(--color-text-secondary)', lineHeight: 1.8 }}>
                                 <ReactMarkdown>
-                                    {meetingData.summary || "No summary available for this meeting."}
+                                    {viewLang === 'en' ? (meetingData.summary || "No summary available.") :
+                                     viewLang === 'hi' ? (meetingData.summary_hi || "Hindi translation not available.") :
+                                     (meetingData.summary_mr || "Marathi translation not available.")}
                                 </ReactMarkdown>
                             </div>
 
@@ -185,7 +255,7 @@ const MeetingDetail = () => {
 
                     {activeTab === 'transcript' && (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-                            {meetingData.segments && meetingData.segments.length > 0 ? (
+                            {viewLang === 'en' && meetingData.segments && meetingData.segments.length > 0 ? (
                                 meetingData.segments.map((seg, idx) => (
                                     <div key={idx} style={{ borderLeft: '3px solid var(--color-primary)', paddingLeft: '1rem' }}>
                                         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
@@ -196,7 +266,11 @@ const MeetingDetail = () => {
                                     </div>
                                 ))
                             ) : (
-                                <p style={{ color: 'var(--color-text-secondary)', whiteSpace: 'pre-wrap' }}>{meetingData.transcript}</p>
+                                <p style={{ color: 'var(--color-text-secondary)', whiteSpace: 'pre-wrap' }}>
+                                    {viewLang === 'en' ? meetingData.transcript :
+                                     viewLang === 'hi' ? (meetingData.transcript_hi || "Hindi translation not available.") :
+                                     (meetingData.transcript_mr || "Marathi translation not available.")}
+                                </p>
                             )}
                         </div>
                     )}

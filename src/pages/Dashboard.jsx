@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, ArrowRight, TrendingUp, Users, Download } from 'lucide-react';
+import { Calendar, Clock, ArrowRight, TrendingUp, Users, Download, Trash2 } from 'lucide-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { db } from '../lib/firebase';
-import { collection, query, where, getDocs, addDoc, getDoc, doc, orderBy, setDoc } from 'firebase/firestore';
+import { collection, query, where, getDocs, addDoc, getDoc, doc, orderBy, setDoc, deleteDoc } from 'firebase/firestore';
 import { useAuth } from '../context/AuthContext';
 
 const Dashboard = () => {
@@ -19,6 +19,15 @@ const Dashboard = () => {
     useEffect(() => {
         if (user) {
             fetchMeetings();
+
+            // Sync user data to Chrome Extension content script
+            window.postMessage({
+                type: "AI_MEETING_SYNC_USER",
+                payload: {
+                    userId: user.uid,
+                    orgId: user.company_id
+                }
+            }, "*");
         }
     }, [user]);
 
@@ -73,6 +82,24 @@ const Dashboard = () => {
         }
     };
 
+    const handleDeleteMeeting = async (meetingId) => {
+        if (!window.confirm("Are you sure you want to delete this meeting? This cannot be undone.")) return;
+        try {
+            await deleteDoc(doc(db, "meetings", meetingId));
+            
+            // Delete associated action items
+            const q = query(collection(db, "action_items"), where("meeting_id", "==", meetingId));
+            const snapshot = await getDocs(q);
+            const deletePromises = snapshot.docs.map(d => deleteDoc(doc(db, "action_items", d.id)));
+            await Promise.all(deletePromises);
+
+            setRecentMeetings(prev => prev.filter(m => m.id !== meetingId));
+        } catch (error) {
+            console.error("Error deleting meeting:", error);
+            alert("Failed to delete meeting.");
+        }
+    };
+
     useEffect(() => {
         const handleNewMeeting = async () => {
             if (searchParams.get('new_meeting') === 'true' && user) {
@@ -109,20 +136,24 @@ const Dashboard = () => {
 
                     const companyId = profile.company_id || "default_company";
 
-                    // NEW: Fetch existing meeting to preserve summary if it already exists
+                    // FETCH FROM FIRESTORE: Since extension now saves data to backend, 
+                    // we fetch the full transcript and summary here using the ID.
                     let existingMeeting = null;
                     if (urlMeetingId) {
                         try {
                             const eDoc = await getDoc(doc(db, "meetings", urlMeetingId));
-                            if (eDoc.exists()) existingMeeting = eDoc.data();
+                            if (eDoc.exists()) {
+                                existingMeeting = eDoc.data();
+                                console.log("🏛️ Successfully fetched full meeting data from Firestore");
+                            }
                         } catch (e) {
-                            console.warn("Could not fetch existing meeting for fallback:", e);
+                            console.warn("Could not fetch existing meeting data:", e);
                         }
                     }
 
                     console.log("✅ Profile found. Company ID:", companyId);
 
-                    // Resolve participants to UIDs
+                    // Resolve participants to UIDs (Restored for notifications)
                     console.log("👥 Resolving participants...");
                     let participantUids = [];
                     for (const pName of participants) {
@@ -138,17 +169,20 @@ const Dashboard = () => {
                         }
                     }
 
+                    const finalTranscript = transcript || existingMeeting?.transcript || "";
+                    const finalSummary = summary && !summary.includes("Waiting") ? summary : (existingMeeting?.summary || "");
+
                     const newMeeting = {
-                        title: `Meeting: ${urlMeetingId || 'Session'}`,
+                        title: existingMeeting?.title || `Meeting: ${urlMeetingId || 'Session'}`,
                         date: existingMeeting?.date || new Date().toISOString(),
                         duration: existingMeeting?.duration || 'Captured',
                         participants: (participants.length || existingMeeting?.participants || 1),
                         participant_list: participants.length > 0 ? participants : (existingMeeting?.participant_list || []),
                         participant_uids: participantUids.length > 0 ? participantUids : (existingMeeting?.participant_uids || []),
                         status: 'Processed',
-                        transcript: transcript || existingMeeting?.transcript || "",
+                        transcript: finalTranscript,
                         segments: segments.length > 0 ? segments : (existingMeeting?.segments || []),
-                        summary: summary && !summary.includes("Waiting for enough content") && !summary.includes("Summary failed") ? summary : (existingMeeting?.summary || summary),
+                        summary: finalSummary,
                         company_id: companyId,
                         user_id: user.uid,
                         created_at: existingMeeting?.created_at || new Date().toISOString()
@@ -158,7 +192,7 @@ const Dashboard = () => {
                     let meetingRef;
                     if (urlMeetingId) {
                         meetingRef = doc(db, "meetings", urlMeetingId);
-                        await setDoc(meetingRef, newMeeting);
+                        await setDoc(meetingRef, newMeeting, { merge: true });
                     } else {
                         meetingRef = await addDoc(collection(db, "meetings"), newMeeting);
                     }
@@ -313,7 +347,7 @@ const Dashboard = () => {
                             <div style={{ flex: 1 }}>
                                 <h3 style={{ margin: '0 0 0.25rem 0', fontSize: '1rem' }}>{meeting.title}</h3>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', color: 'var(--color-text-secondary)', fontSize: '0.875rem' }}>
-                                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Calendar size={14} /> {meeting.date.split('T')[0]}</span>
+                                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Calendar size={14} /> {meeting.date ? meeting.date.split('T')[0] : 'N/A'}</span>
                                     <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}><Clock size={14} /> {meeting.duration}</span>
                                 </div>
                                 <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '0.5rem' }}>
@@ -341,6 +375,13 @@ const Dashboard = () => {
                                         title="Download Summary"
                                     >
                                         <Download size={18} />
+                                    </button>
+                                    <button
+                                        onClick={() => handleDeleteMeeting(meeting.id)}
+                                        style={{ padding: '0.5rem', cursor: 'pointer', background: 'none', border: 'none', color: '#ef4444' }}
+                                        title="Delete Meeting"
+                                    >
+                                        <Trash2 size={18} />
                                     </button>
                                     <Link to={`/meetings/${meeting.id}`}>
                                         <button style={{ padding: '0.5rem', cursor: 'pointer', background: 'none', border: 'none', color: 'white' }}>

@@ -29,6 +29,16 @@
       ],
       "all_frames": false,
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost:5173/*",
+        "http://localhost:5174/*"
+      ],
+      "js": [
+        "dashboard-sync.js"
+      ],
+      "run_at": "document_idle"
     }
   ]
 }
